@@ -369,13 +369,11 @@ public:
                 case NPC_GAS_CLOUD:
                     // no possible aura seen in sniff adding the aurastate
                     summon->ModifyAuraState(AURA_STATE_UNKNOWN22, true);
-                    summon->CastSpell(summon, SPELL_GASEOUS_BLOAT_PROC, true);
                     summon->SetReactState(REACT_PASSIVE);
                     break;
                 case NPC_VOLATILE_OOZE:
                     // no possible aura seen in sniff adding the aurastate
                     summon->ModifyAuraState(AURA_STATE_UNKNOWN19, true);
-                    summon->CastSpell(summon, SPELL_OOZE_ERUPTION_SEARCH_PERIODIC, true);
                     summon->SetReactState(REACT_PASSIVE);
                     break;
                 case NPC_CHOKING_GAS_BOMB:
@@ -744,18 +742,10 @@ public:
 class npc_putricide_oozeAI : public ScriptedAI
 {
 public:
-    npc_putricide_oozeAI(Creature* creature, uint32 hitTargetSpellId) : ScriptedAI(creature),
-        _hitTargetSpellId(hitTargetSpellId), _newTargetSelectTimer(0)
+    npc_putricide_oozeAI(Creature* creature, uint32 auraSpellId, uint32 hitTargetSpellId) : ScriptedAI(creature),
+        _auraSpellId(auraSpellId), _hitTargetSpellId(hitTargetSpellId), _newTargetSelectTimer(0)
     {
         me->SetReactState(REACT_PASSIVE);
-    }
-
-    ObjectGuid targetGUID;
-
-    void SetGUID(ObjectGuid const& guid, int32 type) override
-    {
-        if (type == -1)
-            targetGUID = guid;
     }
 
     void IsSummonedBy(WorldObject* /*summoner*/) override
@@ -770,41 +760,41 @@ public:
             }
     }
 
-    void SelectNewTarget()
+    void Reset() override
     {
-        targetGUID.Clear();
-        me->InterruptNonMeleeSpells(true);
-        me->AttackStop();
-        me->GetMotionMaster()->Clear();
-        me->StopMoving();
-        _newTargetSelectTimer = 1000;
+        if (InstanceScript* instance = me->GetInstanceScript())
+            if (instance->GetBossState(DATA_PROFESSOR_PUTRICIDE) != IN_PROGRESS)
+            {
+                me->DespawnOrUnsummon(1ms);
+                return;
+            }
+
+        DoZoneInCombat();
+        DoCastSelf(_auraSpellId, true);
     }
 
     void SpellHitTarget(Unit* /*target*/, SpellInfo const* spell) override
     {
         if (!_newTargetSelectTimer && spell->Id == sSpellMgr->GetSpellIdForDifficulty(_hitTargetSpellId, me))
-            SelectNewTarget();
+        {
+            _newTargetSelectTimer = 1000;
+            me->SetReactState(REACT_PASSIVE);
+        }
     }
 
     void SpellHit(Unit* /*caster*/, SpellInfo const* spell) override
     {
         if (spell->Id == SPELL_TEAR_GAS_CREATURE)
-            SelectNewTarget();
+            _newTargetSelectTimer = 1000;
     }
 
     void UpdateAI(uint32 diff) override
     {
-        if (!_newTargetSelectTimer)
-        {
-            if ((!me->HasUnitState(UNIT_STATE_CASTING) && !me->GetVictim()) || !me->IsNonMeleeSpellCast(false, false, true, false, true))
-                SelectNewTarget();
-            else if (targetGUID)
-            {
-                Unit* target = ObjectAccessor::GetUnit(*me, targetGUID);
-                if (me->GetVictim()->GetGUID() != targetGUID || !target || !me->IsValidAttackTarget(target) || target->HasUnitFlag2(UNIT_FLAG2_FEIGN_DEATH) || target->GetExactDist2dSq(4356.0f, 3211.0f) > 80.0f * 80.0f || target->GetPositionZ() < 380.0f || target->GetPositionZ() > 405.0f)
-                    SelectNewTarget();
-            }
-        }
+        if (!UpdateVictim() && !_newTargetSelectTimer)
+            return;
+
+        if (!_newTargetSelectTimer && !me->IsNonMeleeSpellCast(false, false, true, false, true))
+            _newTargetSelectTimer = 1000;
 
         DoMeleeAttackIfReady();
 
@@ -826,6 +816,7 @@ public:
     virtual void CastMainSpell() = 0;
 
 private:
+    uint32 _auraSpellId;
     uint32 _hitTargetSpellId;
     uint32 _newTargetSelectTimer;
 };
@@ -837,7 +828,7 @@ public:
 
     struct npc_volatile_oozeAI : public npc_putricide_oozeAI
     {
-        npc_volatile_oozeAI(Creature* creature) : npc_putricide_oozeAI(creature, SPELL_OOZE_ERUPTION)
+        npc_volatile_oozeAI(Creature* creature) : npc_putricide_oozeAI(creature, SPELL_OOZE_ERUPTION_SEARCH_PERIODIC, SPELL_OOZE_ERUPTION)
         {
         }
 
@@ -860,18 +851,14 @@ public:
 
     struct npc_gas_cloudAI : public npc_putricide_oozeAI
     {
-        npc_gas_cloudAI(Creature* creature) : npc_putricide_oozeAI(creature, SPELL_EXPUNGED_GAS)
+        npc_gas_cloudAI(Creature* creature) : npc_putricide_oozeAI(creature, SPELL_GASEOUS_BLOAT_PROC, SPELL_EXPUNGED_GAS)
         {
-            _newTargetSelectTimer = 0;
         }
 
         void CastMainSpell() override
         {
             me->CastCustomSpell(SPELL_GASEOUS_BLOAT, SPELLVALUE_AURA_STACK, 10, me, false);
         }
-
-    private:
-        uint32 _newTargetSelectTimer;
     };
 
     CreatureAI* GetAI(Creature* creature) const override
@@ -1086,9 +1073,9 @@ class spell_putricide_ooze_channel : public SpellScript
         GetCaster()->GetThreatMgr().ClearAllThreat();
         GetCaster()->ToCreature()->SetInCombatWithZone();
         GetCaster()->ToCreature()->AI()->AttackStart(GetHitUnit());
+        GetCaster()->GetThreatMgr().FixateTarget(GetHitUnit());
         GetCaster()->AddThreat(GetHitUnit(), 500000000.0f);    // value seen in sniff
-        if (Creature* c = GetCaster()->ToCreature())
-            c->AI()->SetGUID(GetHitUnit()->GetGUID(), -1);
+        GetCaster()->ToCreature()->SetReactState(REACT_AGGRESSIVE);
     }
 
     void Register() override
@@ -1115,11 +1102,18 @@ class spell_putricide_ooze_eruption_searcher : public SpellScript
     void HandleDummy(SpellEffIndex /*effIndex*/)
     {
         uint32 adhesiveId = sSpellMgr->GetSpellIdForDifficulty(SPELL_VOLATILE_OOZE_ADHESIVE, GetCaster());
-        if (GetHitUnit()->HasAura(adhesiveId))
-        {
-            GetHitUnit()->RemoveAurasDueToSpell(adhesiveId, GetCaster()->GetGUID(), 0, AURA_REMOVE_BY_ENEMY_SPELL);
-            GetCaster()->CastSpell(GetHitUnit(), SPELL_OOZE_ERUPTION, true);
-        }
+        Unit* target = GetHitUnit();
+
+        if (!target->HasAura(adhesiveId))
+            if (Unit* victim = GetCaster()->GetVictim())
+                if (victim->HasAura(adhesiveId))
+                    target = victim;
+
+        if (!target->HasAura(adhesiveId))
+            return;
+
+        target->RemoveAurasDueToSpell(adhesiveId, GetCaster()->GetGUID(), 0, AURA_REMOVE_BY_ENEMY_SPELL);
+        GetCaster()->CastSpell(target, SPELL_OOZE_ERUPTION, true);
     }
 
     void Register() override
