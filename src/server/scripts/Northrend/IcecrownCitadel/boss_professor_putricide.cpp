@@ -1056,11 +1056,7 @@ class spell_putricide_gaseous_bloat_aura : public AuraScript
         {
             target->RemoveAuraFromStack(GetSpellInfo()->Id, GetCasterGUID());
             if (!target->HasAura(GetId()))
-            {
-                CastSpellExtraArgs args;
-                args.AddSpellMod(SPELLVALUE_AURA_STACK, 10);
-                caster->CastSpell(caster, SPELL_GASEOUS_BLOAT, args);
-            }
+                caster->CastCustomSpell(SPELL_GASEOUS_BLOAT, SPELLVALUE_AURA_STACK, 10, caster, false);
         }
     }
 
@@ -1078,9 +1074,7 @@ class spell_putricide_gaseous_bloat_aura : public AuraScript
         for (uint8 i = 1; i <= stack; ++i)
             dmg += mod * i;
 
-        CastSpellExtraArgs args;
-        args.AddSpellBP0(dmg);
-        caster->CastSpell(nullptr, SPELL_EXPUNGED_GAS, args);
+        caster->CastCustomSpell(SPELL_EXPUNGED_GAS, SPELLVALUE_BASE_POINT0, dmg, nullptr, TRIGGERED_FULL_MASK);
 
         if (Creature* cloud = caster->ToCreature())
             cloud->DespawnOrUnsummon(1ms);
