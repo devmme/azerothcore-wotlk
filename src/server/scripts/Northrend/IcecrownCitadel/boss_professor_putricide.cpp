@@ -369,11 +369,13 @@ public:
                 case NPC_GAS_CLOUD:
                     // no possible aura seen in sniff adding the aurastate
                     summon->ModifyAuraState(AURA_STATE_UNKNOWN22, true);
+                    summon->CastSpell(summon, SPELL_GASEOUS_BLOAT_PROC, true);
                     summon->SetReactState(REACT_PASSIVE);
                     break;
                 case NPC_VOLATILE_OOZE:
                     // no possible aura seen in sniff adding the aurastate
                     summon->ModifyAuraState(AURA_STATE_UNKNOWN19, true);
+                    summon->CastSpell(summon, SPELL_OOZE_ERUPTION_SEARCH_PERIODIC, true);
                     summon->SetReactState(REACT_PASSIVE);
                     break;
                 case NPC_CHOKING_GAS_BOMB:
@@ -763,14 +765,15 @@ public:
     void Reset() override
     {
         if (InstanceScript* instance = me->GetInstanceScript())
-            if (instance->GetBossState(DATA_PROFESSOR_PUTRICIDE) != IN_PROGRESS)
-            {
-                me->DespawnOrUnsummon(1ms);
-                return;
-            }
+            if (Creature* professor = ObjectAccessor::GetCreature(*me, instance->GetGuidData(DATA_PROFESSOR_PUTRICIDE)))
+                if (!professor->IsInCombat())
+                {
+                    me->DespawnOrUnsummon(1ms);
+                    return;
+                }
 
-        DoZoneInCombat();
-        DoCastSelf(_auraSpellId, true);
+        if (!me->HasAura(_auraSpellId))
+            DoCastSelf(_auraSpellId, true);
     }
 
     void SpellHitTarget(Unit* /*target*/, SpellInfo const* spell) override
@@ -790,8 +793,14 @@ public:
 
     void UpdateAI(uint32 diff) override
     {
-        if (!UpdateVictim() && !_newTargetSelectTimer)
-            return;
+        if (!UpdateVictim())
+        {
+            if (!_newTargetSelectTimer && !me->IsNonMeleeSpellCast(false, false, true, false, true))
+                _newTargetSelectTimer = 1000;
+
+            if (!_newTargetSelectTimer)
+                return;
+        }
 
         if (!_newTargetSelectTimer && !me->IsNonMeleeSpellCast(false, false, true, false, true))
             _newTargetSelectTimer = 1000;
