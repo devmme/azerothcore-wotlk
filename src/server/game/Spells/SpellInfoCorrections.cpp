@@ -2947,6 +2947,13 @@ void SpellMgr::LoadSpellInfoCorrections()
         spellInfo->Effects[EFFECT_0].Effect = SPELL_EFFECT_APPLY_AURA; // blizzard typo, 65 instead of 6, aura itself is defined (dummy)
     });
 
+    // Professor Putricide, Volatile Ooze Adhesive (Red Ooze Channel)
+    ApplySpellFix({ 70447, 72836, 72837, 72838 }, [](SpellInfo* spellInfo)
+    {
+        spellInfo->Attributes |= SPELL_ATTR0_NO_IMMUNITIES;
+        spellInfo->AttributesEx3 |= SPELL_ATTR3_ALWAYS_HIT;
+    });
+
     // Professor Putricide, Gaseous Bloat (Orange Ooze Channel)
     ApplySpellFix({ 70672, 72455, 72832, 72833 }, [](SpellInfo* spellInfo)
     {

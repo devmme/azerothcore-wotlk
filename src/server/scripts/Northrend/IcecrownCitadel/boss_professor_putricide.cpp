@@ -150,6 +150,16 @@ Position const festergutWatchPos = {4324.820f, 3166.03f, 389.3831f, 3.316126f}; 
 Position const rotfaceWatchPos   = {4390.371f, 3164.50f, 389.3890f, 5.497787f}; //emote 432 (release ooze)
 Position const tablePos          = {4356.190f, 3262.90f, 389.4820f, 1.483530f};
 
+static uint32 GetVolatileOozeAdhesiveAuraId(Unit const* caster)
+{
+    uint32 adhesiveId = sSpellMgr->GetSpellIdForDifficulty(SPELL_VOLATILE_OOZE_ADHESIVE, caster);
+    if (SpellInfo const* adhesiveSpell = sSpellMgr->GetSpellInfo(adhesiveId))
+        if (adhesiveSpell->ExcludeTargetAuraSpell)
+            return sSpellMgr->GetSpellIdForDifficulty(adhesiveSpell->ExcludeTargetAuraSpell, caster);
+
+    return adhesiveId;
+}
+
 class AbominationDespawner
 {
 public:
@@ -369,13 +379,11 @@ public:
                 case NPC_GAS_CLOUD:
                     // no possible aura seen in sniff adding the aurastate
                     summon->ModifyAuraState(AURA_STATE_UNKNOWN22, true);
-                    summon->CastSpell(summon, SPELL_GASEOUS_BLOAT_PROC, true);
                     summon->SetReactState(REACT_PASSIVE);
                     break;
                 case NPC_VOLATILE_OOZE:
                     // no possible aura seen in sniff adding the aurastate
                     summon->ModifyAuraState(AURA_STATE_UNKNOWN19, true);
-                    summon->CastSpell(summon, SPELL_OOZE_ERUPTION_SEARCH_PERIODIC, true);
                     summon->SetReactState(REACT_PASSIVE);
                     break;
                 case NPC_CHOKING_GAS_BOMB:
@@ -765,15 +773,14 @@ public:
     void Reset() override
     {
         if (InstanceScript* instance = me->GetInstanceScript())
-            if (Creature* professor = ObjectAccessor::GetCreature(*me, instance->GetGuidData(DATA_PROFESSOR_PUTRICIDE)))
-                if (!professor->IsInCombat())
-                {
-                    me->DespawnOrUnsummon(1ms);
-                    return;
-                }
+            if (instance->GetBossState(DATA_PROFESSOR_PUTRICIDE) != IN_PROGRESS)
+            {
+                me->DespawnOrUnsummon(1ms);
+                return;
+            }
 
-        if (!me->HasAura(_auraSpellId))
-            DoCastSelf(_auraSpellId, true);
+        DoZoneInCombat();
+        DoCastSelf(_auraSpellId, true);
     }
 
     void SpellHitTarget(Unit* /*target*/, SpellInfo const* spell) override
@@ -782,6 +789,7 @@ public:
         {
             _newTargetSelectTimer = 1000;
             me->SetReactState(REACT_PASSIVE);
+            me->DespawnOrUnsummon(1ms);
         }
     }
 
@@ -793,14 +801,8 @@ public:
 
     void UpdateAI(uint32 diff) override
     {
-        if (!UpdateVictim())
-        {
-            if (!_newTargetSelectTimer && !me->IsNonMeleeSpellCast(false, false, true, false, true))
-                _newTargetSelectTimer = 1000;
-
-            if (!_newTargetSelectTimer)
-                return;
-        }
+        if (!UpdateVictim() && !_newTargetSelectTimer)
+            return;
 
         if (!_newTargetSelectTimer && !me->IsNonMeleeSpellCast(false, false, true, false, true))
             _newTargetSelectTimer = 1000;
@@ -837,13 +839,42 @@ public:
 
     struct npc_volatile_oozeAI : public npc_putricide_oozeAI
     {
-        npc_volatile_oozeAI(Creature* creature) : npc_putricide_oozeAI(creature, SPELL_OOZE_ERUPTION_SEARCH_PERIODIC, SPELL_OOZE_ERUPTION)
+        npc_volatile_oozeAI(Creature* creature) : npc_putricide_oozeAI(creature, SPELL_OOZE_ERUPTION_SEARCH_PERIODIC, SPELL_OOZE_ERUPTION), _exploded(false)
         {
         }
 
         void CastMainSpell() override
         {
             me->CastSpell(me, SPELL_VOLATILE_OOZE_ADHESIVE, false);
+        }
+
+        void UpdateAI(uint32 diff) override
+        {
+            npc_putricide_oozeAI::UpdateAI(diff);
+
+            if (_exploded || !me->GetVictim() || me->HasAura(SPELL_TEAR_GAS_CREATURE))
+                return;
+
+            if (!me->IsWithinMeleeRange(me->GetVictim()))
+                return;
+
+            TryErupt();
+        }
+
+    private:
+        bool _exploded;
+
+        void TryErupt()
+        {
+            Unit* target = me->GetVictim();
+            uint32 const adhesiveId = GetVolatileOozeAdhesiveAuraId(me);
+            if (!target || !target->HasAura(adhesiveId))
+                return;
+
+            target->RemoveAurasDueToSpell(adhesiveId, me->GetGUID(), 0, AURA_REMOVE_BY_ENEMY_SPELL);
+            me->CastSpell(target, SPELL_OOZE_ERUPTION, true);
+            _exploded = true;
+            me->DespawnOrUnsummon(1ms);
         }
     };
 
@@ -1015,21 +1046,50 @@ class spell_putricide_gaseous_bloat_aura : public AuraScript
 
     bool Validate(SpellInfo const* /*spellInfo*/) override
     {
-        return ValidateSpellInfo({ SPELL_GASEOUS_BLOAT });
+        return ValidateSpellInfo({ SPELL_GASEOUS_BLOAT, SPELL_EXPUNGED_GAS });
     }
 
     void HandleExtraEffect(AuraEffect const* /*aurEff*/)
     {
         Unit* target = GetTarget();
-        target->RemoveAuraFromStack(GetSpellInfo()->Id, GetCasterGUID());
-        /*if (!target->HasAura(GetId()))
-            if (Unit* caster = GetCaster())
-                caster->CastCustomSpell(SPELL_GASEOUS_BLOAT, SPELLVALUE_AURA_STACK, 10, caster, false);*/
+        if (Unit* caster = GetCaster())
+        {
+            target->RemoveAuraFromStack(GetSpellInfo()->Id, GetCasterGUID());
+            if (!target->HasAura(GetId()))
+            {
+                CastSpellExtraArgs args;
+                args.AddSpellMod(SPELLVALUE_AURA_STACK, 10);
+                caster->CastSpell(caster, SPELL_GASEOUS_BLOAT, args);
+            }
+        }
+    }
+
+    void HandleProc(AuraEffect const* /*aurEff*/, ProcEventInfo& eventInfo)
+    {
+        PreventDefaultAction();
+
+        Unit* caster = eventInfo.GetActor();
+        if (!caster)
+            return;
+
+        uint32 stack = GetStackAmount();
+        int32 const mod = caster->GetMap()->Is25ManRaid() ? 1500 : 1250;
+        int32 dmg = 0;
+        for (uint8 i = 1; i <= stack; ++i)
+            dmg += mod * i;
+
+        CastSpellExtraArgs args;
+        args.AddSpellBP0(dmg);
+        caster->CastSpell(nullptr, SPELL_EXPUNGED_GAS, args);
+
+        if (Creature* cloud = caster->ToCreature())
+            cloud->DespawnOrUnsummon(1ms);
     }
 
     void Register() override
     {
         OnEffectPeriodic += AuraEffectPeriodicFn(spell_putricide_gaseous_bloat_aura::HandleExtraEffect, EFFECT_0, SPELL_AURA_PERIODIC_DAMAGE);
+        OnEffectProc += AuraEffectProcFn(spell_putricide_gaseous_bloat_aura::HandleProc, EFFECT_0, SPELL_AURA_PERIODIC_DAMAGE);
     }
 };
 
@@ -1110,19 +1170,23 @@ class spell_putricide_ooze_eruption_searcher : public SpellScript
 
     void HandleDummy(SpellEffIndex /*effIndex*/)
     {
-        uint32 adhesiveId = sSpellMgr->GetSpellIdForDifficulty(SPELL_VOLATILE_OOZE_ADHESIVE, GetCaster());
+        Unit* caster = GetCaster();
         Unit* target = GetHitUnit();
+        uint32 const adhesiveId = GetVolatileOozeAdhesiveAuraId(caster);
 
         if (!target->HasAura(adhesiveId))
-            if (Unit* victim = GetCaster()->GetVictim())
+            if (Unit* victim = caster->GetVictim())
                 if (victim->HasAura(adhesiveId))
                     target = victim;
 
-        if (!target->HasAura(adhesiveId))
+        if (!target || !target->HasAura(adhesiveId))
             return;
 
-        target->RemoveAurasDueToSpell(adhesiveId, GetCaster()->GetGUID(), 0, AURA_REMOVE_BY_ENEMY_SPELL);
-        GetCaster()->CastSpell(target, SPELL_OOZE_ERUPTION, true);
+        target->RemoveAurasDueToSpell(adhesiveId, caster->GetGUID(), 0, AURA_REMOVE_BY_ENEMY_SPELL);
+        caster->CastSpell(target, SPELL_OOZE_ERUPTION, true);
+
+        if (Creature* ooze = caster->ToCreature())
+            ooze->DespawnOrUnsummon(1ms);
     }
 
     void Register() override
